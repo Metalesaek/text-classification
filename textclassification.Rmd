@@ -1,0 +1,178 @@
+---
+title: "text-model"
+author: "Abdelkader Metales"
+date: "3/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r comment="", message=FALSE,warning=FALSE}
+library(keras)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+```
+
+
+```{r}
+imdb <- dataset_imdb(num_words = 10000)
+
+c(train_data, train_labels) %<-% imdb$train
+c(test_data, test_labels) %<-% imdb$test
+ 
+```
+
+```{r}
+word_index <- dataset_imdb_word_index()
+```
+
+
+```{r}
+train_data[[2]]
+```
+
+
+```{r}
+word_index_df <- data.frame(
+  word = names(word_index),
+  idx = unlist(word_index, use.names = FALSE),
+  stringsAsFactors = FALSE
+)
+
+# The first indices are reserved
+
+word_index_df <- word_index_df %>% mutate(idx = idx + 3)
+word_index_df <- word_index_df %>%
+  add_row(word = "<PAD>", idx = 0)%>%
+  add_row(word = "<START>", idx = 1)%>%
+  add_row(word = "<UNK>", idx = 2)%>%
+  add_row(word = "<UNUSED>", idx = 3)
+
+word_index_df <- word_index_df %>% arrange(idx)
+
+decode_review <- function(text){
+  paste(map(text, function(number) word_index_df %>%
+              filter(idx == number) %>%
+              select(word) %>% 
+              pull()),
+        collapse = " ")
+}
+
+```
+
+
+```{r}
+decode_review(train_data[[6]])
+```
+
+The reviews — the arrays of integers — must be converted to tensors before fed into the neural network. This conversion can be done a couple of ways:
+
+* One-hot-encode the arrays to convert them into vectors of 0s and 1s. For example, the sequence [3, 5] would become a 10,000-dimensional vector that is all zeros except for indices 3 and 5, which are ones. Then, make this the first layer in our network — a dense layer — that can handle floating point vector data. This approach is memory intensive, though, requiring a num_words num_reviews size matrix.
+
+* Alternatively, we can pad the arrays so they all have the same length, then create an integer tensor of shape num_examples max_length. We can use an embedding layer capable of handling this shape as the first layer in our network.
+
+In this tutorial, we will use the second approach.
+
+Since the movie reviews must be the same length, we will use the pad_sequences function to standardize the lengths:
+
+```{r}
+train_data <- pad_sequences(
+  train_data,
+  value = word_index_df %>% filter(word == "<PAD>") %>% select(idx) %>% pull(),
+  padding = "post",
+  maxlen = 256
+)
+
+test_data <- pad_sequences(
+  test_data,
+  value = word_index_df %>% filter(word == "<PAD>") %>% select(idx) %>% pull(),
+  padding = "post",
+  maxlen = 256
+)
+```
+
+```{r}
+length(train_data[1, ])
+length(train_data[2, ])
+```
+
+
+```{r}
+train_data[1, ]
+```
+
+
+```{r}
+# input shape is the vocabulary count used for the movie reviews (10,000 words)
+vocab_size <- 10000
+
+model <- keras_model_sequential()
+model %>% 
+  layer_embedding(input_dim = vocab_size, output_dim = 16) %>%
+  layer_global_average_pooling_1d() %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+model %>% summary()
+```
+
+
+The layers are stacked sequentially to build the classifier:
+
+    The first layer is an embedding layer. This layer takes the integer-encoded vocabulary and looks up the embedding vector for each word-index. These vectors are learned as the model trains. The vectors add a dimension to the output array. The resulting dimensions are: (batch, sequence, embedding).
+    Next, a global_average_pooling_1d layer returns a fixed-length output vector for each example by averaging over the sequence dimension. This allows the model to handle input of variable length, in the simplest way possible.
+    This fixed-length output vector is piped through a fully-connected (dense) layer with 16 hidden units.
+    The last layer is densely connected with a single output node. Using the sigmoid activation function, this value is a float between 0 and 1, representing a probability, or confidence level.
+
+Hidden units
+
+The above model has two intermediate or “hidden” layers, between the input and output. The number of outputs (units, nodes, or neurons) is the dimension of the representational space for the layer. In other words, the amount of freedom the network is allowed when learning an internal representation.
+
+If a model has more hidden units (a higher-dimensional representation space), and/or more layers, then the network can learn more complex representations. However, it makes the network more computationally expensive and may lead to learning unwanted patterns — patterns that improve performance on training data but not on the test data. This is called overfitting, and we’ll explore it later.
+Loss function and optimizer
+
+A model needs a loss function and an optimizer for training. Since this is a binary classification problem and the model outputs a probability (a single-unit layer with a sigmoid activation), we’ll use the binary_crossentropy loss function.
+
+This isn’t the only choice for a loss function, you could, for instance, choose mean_squared_error. But, generally, binary_crossentropy is better for dealing with probabilities — it measures the “distance” between probability distributions, or in our case, between the ground-truth distribution and the predictions.
+
+Later, when we are exploring regression problems (say, to predict the price of a house), we will see how to use another loss function called mean squared error.
+
+Now, configure the model to use an optimizer and a loss function:
+
+```{r}
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = list('accuracy')
+)
+```
+
+```{r}
+x_val <- train_data[1:10000, ]
+partial_x_train <- train_data[10001:nrow(train_data), ]
+
+y_val <- train_labels[1:10000]
+partial_y_train <- train_labels[10001:length(train_labels)]
+```
+
+
+```{r}
+history <- model %>% fit(
+  partial_x_train,
+  partial_y_train,
+  epochs = 40,
+  batch_size = 512,
+  validation_data = list(x_val, y_val),
+  verbose=1
+)
+```
+
+
+```{r}
+results <- model %>% evaluate(test_data, test_labels)
+results
+```
+
